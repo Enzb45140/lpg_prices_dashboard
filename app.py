@@ -98,15 +98,32 @@ CHART_TEMPLATE = 'plotly_dark'
 # ─────────────────────────────────────────────────────────────
 # DATA LOADING
 # ─────────────────────────────────────────────────────────────
+import requests
+
 @st.cache_data(ttl=3600, show_spinner="Loading prices from Databricks...")
 def load_data(lookback_days: int = 365 * 3) -> pd.DataFrame:
     since = (datetime.date.today() - datetime.timedelta(days=lookback_days)).isoformat()
+
+    # Step 1: get Azure AD token for the SP
+    tenant_id     = st.secrets["DATABRICKS_TENANT_ID"]
+    client_id     = st.secrets["DATABRICKS_CLIENT_ID"]
+    client_secret = st.secrets["DATABRICKS_CLIENT_SECRET"]
+
+    token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/token"
+    token_resp = requests.post(token_url, data={
+        "grant_type":    "client_credentials",
+        "client_id":     client_id,
+        "client_secret": client_secret,
+        "resource":      "2ff814a6-3304-4ab8-85cb-cd0e6f879c1d",  # Databricks resource ID (fixed)
+    })
+    token_resp.raise_for_status()
+    access_token = token_resp.json()["access_token"]
+
+    # Step 2: connect using the token
     with sql.connect(
         server_hostname = st.secrets["DATABRICKS_HOST"],
         http_path       = st.secrets["DATABRICKS_HTTP_PATH"],
-        auth_type       = "databricks-oauth",
-        oauth_client_id = st.secrets["DATABRICKS_CLIENT_ID"],
-        oauth_client_secret = st.secrets["DATABRICKS_CLIENT_SECRET"],
+        access_token    = access_token,
     ) as conn:
         with conn.cursor() as cur:
             cur.execute(f"""
@@ -117,6 +134,7 @@ def load_data(lookback_days: int = 365 * 3) -> pd.DataFrame:
             """)
             rows = cur.fetchall()
             cols = [d[0] for d in cur.description]
+
     df = pd.DataFrame(rows, columns=cols)
     df['publication_date'] = pd.to_datetime(df['publication_date'])
     df['price'] = pd.to_numeric(df['price'], errors='coerce')
